@@ -16,7 +16,8 @@ test('parseDDGHtml: parses result blocks, unwraps uddg redirects, decodes entiti
   const html = readFileSync(join(FIXTURES, 'ddg-results.html'), 'utf8');
   const results = parseDDGHtml(html);
 
-  assert.equal(results.length, 2, 'block without result__a anchor must be skipped');
+  assert.equal(results.length, 2, 'anchor-less blocks and y.js ad redirects must be skipped');
+  assert.ok(results.every(r => !r.url.includes('duckduckgo.com')), 'no DDG ad/redirect URLs may survive');
 
   assert.equal(
     results[0].url,

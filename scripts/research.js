@@ -17,8 +17,11 @@ const crypto = require('crypto');
 const { search, getSearchCost, resetSearchApiCalls, getHealthSummary: getSearchHealth } = require('./lib/search');
 const { fetchRedditThread, extractRedditIds, getRedditApiCalls, resetRedditApiCalls, getRedditHealthSummary, cachePrune: pruneRedditCache } = require('./lib/reddit');
 const { addFeedback, getCalibrationNote, getFeedbackSummary, loadFeedback } = require('./lib/feedback');
+const { buildBundle, loadBundle, saveBundle, appendSource } = require('./lib/bundle');
+const { verifyClaims, validateClaimsDoc, CLAIMS_SCHEMA } = require('./lib/verify');
+const { createFetchLog } = require('./lib/fetchlog');
 
-const SCHEMA_VERSION = 'v5';
+const SCHEMA_VERSION = 'v6';
 const BRAND_INTEL_SCHEMA_VERSION = 1;
 
 const REDDIT_UA = 'ConsensusResearch/5.0';
@@ -111,153 +114,13 @@ const TEMPORAL_DECAY_DAYS = {
 const POSITIVE_RE = /\b(recommend|great|best|love|solid|excellent|amazing|perfect|reliable|top.?notch|go.?to|switched to|worth it|favorite|fantastic)\b/i;
 const NEGATIVE_RE = /\b(avoid|terrible|worst|returned|refund|broken|broke|recall|garbage|awful|disappointed|stopped|issue|issues|problem|complaint|failed|sick|nausea|headache|contaminat|lead|buggy|crash|slow)\b/i;
 
-const GLOBAL_DIMENSION_ALIASES = {
-  'third party tested': 'testing',
-  'third-party tested': 'testing',
-  'lab tested': 'testing',
-  'coa': 'testing',
-  'certificate of analysis': 'testing',
-  'tested': 'testing',
-  'purity': 'purity',
-  'contamination': 'quality',
-  'contaminated': 'quality',
-  'recall': 'quality',
-  'lead': 'quality',
-  'heavy metal': 'quality',
-  'cheap': 'value',
-  'cheaper': 'value',
-  'expensive': 'value',
-  'overpriced': 'value',
-  'price': 'value',
-  'pricing': 'pricing',
-  'cost': 'value',
-  'value': 'value',
-  'stomach': 'side-effects',
-  'nausea': 'side-effects',
-  'headache': 'side-effects',
-  'side effect': 'side-effects',
-  'side effects': 'side-effects',
-  'made me sick': 'side-effects',
-  'taste': 'taste',
-  'flavor': 'taste',
-  'dissolve': 'taste',
-  'solubility': 'taste',
-  'comfort': 'comfort',
-  'comfortable': 'comfort',
-  'battery': 'battery',
-  'display': 'display',
-  'screen': 'display',
-  'build quality': 'build',
-  'build': 'build',
-  'durability': 'durability',
-  'durable': 'durability',
-  'lasted': 'durability',
-  'broke': 'durability',
-  'broken': 'durability',
-  'stopped working': 'durability',
-  'performance': 'performance',
-  'fast': 'performance',
-  'slow': 'performance',
-  'lag': 'performance',
-  'bug': 'bugs',
-  'bugs': 'bugs',
-  'crash': 'bugs',
-  'crashes': 'bugs',
-  'docs': 'docs',
-  'documentation': 'docs',
-  'ux': 'ux',
-  'ui': 'ux',
-  'support': 'support',
-  'customer service': 'support',
-  'service': 'service',
-  'food': 'food',
-  'ambiance': 'ambiance',
-  'wait': 'wait-time',
-  'wait time': 'wait-time',
-  'adoption': 'adoption',
-  'stars': 'adoption',
-  'maintenance': 'maintenance'
-};
-
-const CATEGORY_DIMENSION_ALIASES = {
-  supplement: {
-    'dosage': 'dosage',
-    'serving': 'dosage',
-    'amino acid': 'purity'
-  },
-  product: {
-    'design': 'design',
-    'features': 'features'
-  },
-  tech: {
-    'anc': 'noise cancellation',
-    'noise cancellation': 'noise cancellation',
-    'sound quality': 'sound quality',
-    'sound': 'sound quality',
-    'features': 'features'
-  },
-  software: {
-    'pricing': 'pricing',
-    'workflow': 'ux',
-    'editor': 'ux',
-    'api': 'features'
-  },
-  restaurant: {
-    'menu': 'food',
-    'staff': 'service'
-  },
-  service: {
-    'response time': 'support',
-    'billing': 'pricing'
-  }
-};
-
-const DIMENSION_SEVERITY_FAMILY = {
-  'side-effects': 'safety',
-  'safety': 'safety',
-  'purity': 'quality',
-  'testing': 'quality',
-  'quality': 'quality',
-  'build': 'quality',
-  'durability': 'effectiveness',
-  'performance': 'effectiveness',
-  'battery': 'effectiveness',
-  'bugs': 'effectiveness',
-  'noise cancellation': 'effectiveness',
-  'sound quality': 'effectiveness',
-  'support': 'quality',
-  'service': 'quality',
-  'food': 'quality',
-  'value': 'value',
-  'pricing': 'value',
-  'price': 'value',
-  'taste': 'taste',
-  'comfort': 'taste',
-  'ux': 'other',
-  'docs': 'other',
-  'ambiance': 'other',
-  'wait-time': 'other',
-  'adoption': 'other',
-  'maintenance': 'other'
-};
-
-const NEGATIVE_SCORE_WEIGHTS = {
-  safety: 1.5,
-  effectiveness: 1.0,
-  quality: 0.5,
-  value: 0.25,
-  taste: 0.25,
-  other: 0.25
-};
-
-const SEVERITY_RANK = {
-  safety: 5,
-  quality: 4,
-  effectiveness: 3,
-  value: 2,
-  taste: 1,
-  other: 1
-};
+const {
+  GLOBAL_DIMENSION_ALIASES,
+  CATEGORY_DIMENSION_ALIASES,
+  DIMENSION_SEVERITY_FAMILY,
+  NEGATIVE_SCORE_WEIGHTS,
+  SEVERITY_RANK
+} = require('./lib/taxonomy');
 
 const BRAND_BLACKLIST = new Set([
   'the', 'and', 'for', 'with', 'new', 'best', 'top', 'all', 'one', 'now',
@@ -491,7 +354,7 @@ function cacheClear() {
   return files.length;
 }
 
-const SUBCOMMANDS = new Set(['cache', 'watchlist', 'feedback', 'status']);
+const SUBCOMMANDS = new Set(['cache', 'watchlist', 'feedback', 'status', 'collect', 'extract', 'score', 'ingest']);
 
 function loadConfig() {
   if (!existsSync(CONFIG_PATH)) return {};
@@ -526,7 +389,10 @@ function parseArgs(argv) {
     subcommand: null,
     subAction: null,
     subArgs: [],
-    note: null
+    note: null,
+    out: null,
+    bundle: null,
+    platform: null
   };
 
   if (argv.length > 0 && SUBCOMMANDS.has(argv[0])) {
@@ -549,6 +415,29 @@ function parseArgs(argv) {
         opts.deep = true;
       } else if (arg === '--budget' && argv[i + 1]) {
         opts.budget = parseInt(argv[++i], 10);
+      } else if (arg === '--depth' && argv[i + 1]) {
+        opts.depth = argv[++i];
+      } else if (arg === '--out' && argv[i + 1]) {
+        opts.out = argv[++i];
+      } else if (arg === '--bundle' && argv[i + 1]) {
+        opts.bundle = argv[++i];
+      } else if (arg === '--format' && argv[i + 1]) {
+        opts.format = argv[++i];
+      } else if (arg === '--output' && argv[i + 1]) {
+        opts.output = argv[++i];
+      } else if (arg === '--location' && argv[i + 1]) {
+        opts.location = argv[++i];
+      } else if (arg === '--min-score' && argv[i + 1]) {
+        opts.minScore = parseInt(argv[++i], 10);
+      } else if (arg === '--platform' && argv[i + 1]) {
+        opts.platform = argv[++i];
+      } else if (arg === '--no-cache') {
+        opts.noCache = true;
+      } else if (arg === '--save') {
+        opts.save = true;
+        if (argv[i + 1] && !argv[i + 1].startsWith('--')) {
+          opts.saveDir = argv[++i];
+        }
       } else if (!arg.startsWith('--')) {
         opts.subArgs.push(arg);
       }
@@ -998,7 +887,7 @@ function locationScopedQuery(query, location) {
   return `${query} ${location}`;
 }
 
-async function collectRawData(query, opts) {
+async function collectRawData(query, opts, fetchLog = null) {
   const category = opts.category || detectCategory(query);
   const depth = opts.depth || 'standard';
   const minScore = opts.minScore ?? null;
@@ -1035,6 +924,7 @@ async function collectRawData(query, opts) {
     raw.reddit.totalComments = raw.reddit.threads.reduce((sum, thread) => sum + thread.commentCount, 0);
   } catch (err) {
     log(`Reddit failed: ${err.message}`);
+    fetchLog?.record({ platform: 'reddit', stage: 'search', ok: false, error: err.message });
   }
 
   const expertSites = CATEGORY_EXPERT_SITES[category] || CATEGORY_EXPERT_SITES.product;
@@ -1046,6 +936,7 @@ async function collectRawData(query, opts) {
       raw.web = await searchWeb(webQuery);
     } catch (err) {
       log(`Web search failed: ${err.message}`);
+      fetchLog?.record({ platform: 'web', stage: 'search', ok: false, error: err.message });
     }
   } else if (compareMode) {
     log(`Searching Amazon + expert sites (${expertSites.join(', ')})...`);
@@ -1057,6 +948,7 @@ async function collectRawData(query, opts) {
       raw.amazon = mergeProductSets(amazonSets);
     } catch (err) {
       log(`Amazon failed: ${err.message}`);
+      fetchLog?.record({ platform: 'amazon', stage: 'search', ok: false, error: err.message });
     }
 
     try {
@@ -1067,16 +959,19 @@ async function collectRawData(query, opts) {
       raw.web = mergeResultSets(webSets, 'results');
     } catch (err) {
       log(`Web search failed: ${err.message}`);
+      fetchLog?.record({ platform: 'web', stage: 'search', ok: false, error: err.message });
     }
   } else {
     log(`Searching Amazon + expert sites (${expertSites.join(', ')})...`);
     const [amazonResult, webResult] = await Promise.all([
       searchAmazon(focusQuery).catch(err => {
         log(`Amazon failed: ${err.message}`);
+        fetchLog?.record({ platform: 'amazon', stage: 'search', ok: false, error: err.message });
         return { products: [] };
       }),
       searchWeb(`${focusQuery} review`, expertSites).catch(err => {
         log(`Web failed: ${err.message}`);
+        fetchLog?.record({ platform: 'web', stage: 'search', ok: false, error: err.message });
         return { results: [] };
       })
     ]);
@@ -1091,6 +986,7 @@ async function collectRawData(query, opts) {
       raw.github = await searchGitHub(focusQuery, compareTerms, depth === 'quick' ? 2 : 3);
     } catch (err) {
       log(`GitHub failed: ${err.message}`);
+      fetchLog?.record({ platform: 'github', stage: 'search', ok: false, error: err.message });
     }
   }
 
@@ -1102,6 +998,7 @@ async function collectRawData(query, opts) {
       };
     } catch (err) {
       log(`YouTube failed: ${err.message}`);
+      fetchLog?.record({ platform: 'youtube', stage: 'search', ok: false, error: err.message });
     }
 
     log('Searching Twitter/X complaints...');
@@ -1111,6 +1008,7 @@ async function collectRawData(query, opts) {
       };
     } catch (err) {
       log(`Twitter failed: ${err.message}`);
+      fetchLog?.record({ platform: 'twitter', stage: 'search', ok: false, error: err.message });
     }
   }
 
@@ -1125,6 +1023,13 @@ async function collectRawData(query, opts) {
   };
   raw.dataSufficiency = calcDataSufficiency(raw);
   raw.apiCost = getApiCost();
+
+  if (fetchLog) {
+    for (const [platform, count] of Object.entries(raw.sourceCount)) {
+      fetchLog.record({ platform, stage: 'summary', ok: true, count });
+    }
+  }
+
   return raw;
 }
 
@@ -2086,8 +1991,44 @@ function buildSourceSummary(raw) {
   return summary;
 }
 
+function buildVerificationStamp(structured) {
+  const sourceTypeCount = Object.values(structured.sourceSummary || {}).filter(count => count > 0).length;
+  const totalSources = Object.values(structured.sourceSummary || {}).reduce((sum, count) => sum + count, 0);
+  const extractor = structured.extractor || 'regex';
+  const verification = structured.verification;
+
+  if (!verification) {
+    // Legacy regex path: quotes are machine-copied from source text, but
+    // nothing semantically verified them. Cap at Partial unless data is strong.
+    const icon = structured.dataSufficiency === 'high' && sourceTypeCount >= 3 ? '[OK]' : '[WARN]';
+    const label = icon === '[OK]' ? 'Verified' : 'Partial';
+    return `${icon} ${label} — ${totalSources} sources, regex extraction (no quote verification pass) | extractor: ${extractor} | ${SCHEMA_VERSION}`;
+  }
+
+  const { total, exact, fuzzy, attested, rejected } = verification.stats;
+  const verifiedCount = exact + fuzzy;
+  const rejectionRate = total > 0 ? rejected / total : 0;
+
+  let icon = '[WARN]';
+  let label = 'Partial';
+  if (total === 0 || sourceTypeCount < 2 || rejectionRate > 0.5) {
+    icon = '[FAIL]';
+    label = 'Incomplete';
+  } else if (rejectionRate < 0.15 && sourceTypeCount >= 3 && attested <= verifiedCount) {
+    icon = '[OK]';
+    label = 'Verified';
+  }
+
+  const attestedPart = attested > 0 ? `, ${attested} attested` : '';
+  return `${icon} ${label} — ${totalSources} sources, ${verifiedCount}/${total} claims quote-verified (${exact} exact, ${fuzzy} fuzzy)${attestedPart}, ${rejected} rejected | extractor: ${extractor} | ${SCHEMA_VERSION}`;
+}
+
 function analyzeRawResult(raw, brandIntel, opts) {
   const { claims, catalog } = extractClaims(raw, brandIntel, opts);
+  return analyzeClaims(claims, catalog, raw, brandIntel, opts);
+}
+
+function analyzeClaims(claims, catalog, raw, brandIntel, opts) {
   const { themes, weakSignals } = groupThemes(claims);
   const crossBrandThemes = buildCrossBrandThemes(themes);
   const priorIntel = collectPriorIntel(
@@ -2119,8 +2060,8 @@ function analyzeRawResult(raw, brandIntel, opts) {
   const calibrationNote = getCalibrationNote();
 
   const structured = {
-    schema: 'consensus-research/v5',
-    schemaVersion: 5,
+    schema: 'consensus-research/v6',
+    schemaVersion: 6,
     query: raw.query,
     category: raw.category,
     depth: raw.depth,
@@ -2142,6 +2083,12 @@ function analyzeRawResult(raw, brandIntel, opts) {
       ? buildStructuredComparison(themes, comparisonItems, draftScore, raw.dataSufficiency)
       : null
   };
+
+  structured.extractor = opts.extractor || 'regex';
+  structured.extractorModel = opts.extractorModel || null;
+  structured.verification = opts.verification || null;
+  structured.fetchLog = raw.fetchLog || null;
+  structured.stamp = buildVerificationStamp(structured);
 
   return {
     raw,
@@ -2454,6 +2401,20 @@ function generateMarkdownReport(structured) {
 
   lines.push(`**API cost:** ${structured.apiCost.total} calls (~$${structured.apiCost.estimatedUSD.toFixed(3)})`);
   lines.push('');
+
+  if (structured.verification?.rejected?.length) {
+    lines.push('## Rejected Claims (failed quote verification)');
+    for (const rejectedClaim of structured.verification.rejected.slice(0, 10)) {
+      lines.push(`- ${rejectedClaim.brand || 'category'} / ${rejectedClaim.dimension}: ${rejectedClaim.reason}`);
+    }
+    lines.push('');
+  }
+
+  if (structured.stamp) {
+    lines.push(structured.stamp);
+    lines.push('');
+  }
+
   lines.push(`*Generated by consensus-research ${SCHEMA_VERSION}*`);
 
   return lines.join('\n');
@@ -2494,7 +2455,7 @@ function buildV5Json(structured, raw) {
   };
 
   return {
-    schema: 'consensus-research/v5',
+    schema: 'consensus-research/v6',
     meta: {
       query: structured.query,
       category: structured.category,
@@ -2545,7 +2506,11 @@ function buildV5Json(structured, raw) {
       Object.entries(structured.sourceSummary || {}).map(([k, v]) => [k, { count: v, signal: v > 2 ? 'HIGH' : v > 0 ? 'MEDIUM' : 'NONE' }])
     ),
     comparison: structured.comparison || null,
-    location: structured.location || null
+    location: structured.location || null,
+    extractor: structured.extractor || 'regex',
+    extractorModel: structured.extractorModel || null,
+    verification: structured.verification || null,
+    stamp: structured.stamp || null
   };
 }
 
@@ -2859,12 +2824,239 @@ async function runResearch(query, opts) {
   };
 }
 
+// --- Two-phase commands: collect → (agent or regex extract) → score ---
+
+function defaultBundlePath(query) {
+  return join(resolve(process.cwd(), 'data/bundles'), `${slugify(query)}-${toDateOnly()}.bundle.json`);
+}
+
+async function collectCommand(args) {
+  const query = args.subAction;
+  if (!query) {
+    console.error('Usage: research.js collect "<query>" [--depth quick|standard|deep] [--category X] [--location Y] [--out path]');
+    process.exit(1);
+  }
+
+  const category = args.category || detectCategory(query);
+  const categoryError = validateCategory(category);
+  if (categoryError) {
+    console.log(categoryError);
+    process.exit(0);
+  }
+  const depth = ['quick', 'standard', 'deep'].includes(args.depth) ? args.depth : 'standard';
+
+  resetApiCalls();
+  const fetchLog = createFetchLog();
+  const opts = { ...args, category, depth };
+
+  let raw = null;
+  if (!args.noCache) {
+    raw = cacheGet(query, category, depth, depth === 'quick' ? CACHE_TTL_QUICK_MS : CACHE_TTL_MS, opts);
+    if (raw) {
+      raw = { ...raw, apiCost: getApiCost() };
+      log('(cached raw collection)');
+    }
+  }
+  if (!raw) {
+    raw = await collectRawData(query, opts, fetchLog);
+    if (!args.noCache) cacheSet(query, category, depth, opts, raw);
+  }
+
+  const brandIntel = loadBrandIntel();
+  const catalog = buildEntityCatalog(raw, [], brandIntel);
+  const seeds = [...catalog.values()].map(entry => entry.canonical).slice(0, 60);
+
+  const bundle = buildBundle(raw, fetchLog.entries(), seeds);
+  const outPath = saveBundle(bundle, args.out || defaultBundlePath(query));
+
+  console.log(JSON.stringify({
+    bundlePath: outPath,
+    schema: bundle.schema,
+    query,
+    category,
+    depth,
+    sources: bundle.sources.length,
+    sourcesByPlatform: bundle.sources.reduce((acc, source) => {
+      acc[source.platform] = (acc[source.platform] || 0) + 1;
+      return acc;
+    }, {}),
+    fullTextSources: bundle.sources.filter(source => source.fetchLevel === 'full').length,
+    agentFetchSuggested: bundle.sources
+      .filter(source => source.agentFetchSuggested)
+      .map(source => ({ id: source.id, url: source.url })),
+    dataSufficiency: bundle.dataSufficiency,
+    fetchFailures: fetchLog.failures().map(entry => ({ platform: entry.platform, error: entry.error })),
+    taxonomyDimensions: bundle.taxonomy.dimensions.length
+  }, null, 2));
+  logApiCost();
+}
+
+function extractCommand(args) {
+  const bundlePath = args.subAction;
+  if (!bundlePath) {
+    console.error('Usage: research.js extract <bundle.json> [--out claims.json]');
+    process.exit(1);
+  }
+
+  const bundle = loadBundle(bundlePath);
+  const brandIntel = loadBrandIntel();
+  const { claims } = extractClaims(bundle.raw, brandIntel, {});
+
+  const byUrl = new Map();
+  for (const source of bundle.sources) {
+    if (!byUrl.has(source.url)) byUrl.set(source.url, source);
+  }
+
+  const mapped = [];
+  for (const claim of claims) {
+    const source = byUrl.get(claim.url);
+    if (!source) continue;
+    // GitHub claims are synthesized summaries, not quotes — substitute the
+    // verifiable source text so they survive the verification pass.
+    const quote = source.platform === 'github' ? source.text.slice(0, 280) : claim.quote;
+    mapped.push({
+      brand: claim.brand,
+      dimension: claim.dimension,
+      polarity: claim.polarity,
+      sourceId: source.id,
+      quote
+    });
+  }
+
+  const doc = {
+    schema: CLAIMS_SCHEMA,
+    query: bundle.query,
+    category: bundle.category,
+    extractor: 'regex',
+    claims: mapped
+  };
+
+  const json = JSON.stringify(doc, null, 2);
+  if (args.out) {
+    ensureDir(dirname(resolve(args.out)));
+    writeFileSync(resolve(args.out), json, 'utf8');
+    console.log(JSON.stringify({ claimsPath: resolve(args.out), claims: mapped.length, extractor: 'regex' }, null, 2));
+  } else {
+    console.log(json);
+  }
+}
+
+async function scoreCommand(args) {
+  const claimsPath = args.subAction;
+  if (!claimsPath || !args.bundle) {
+    console.error('Usage: research.js score <claims.json> --bundle <bundle.json> [--save] [--format json] [--output path]');
+    process.exit(1);
+  }
+
+  const bundle = loadBundle(args.bundle);
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync(resolve(claimsPath), 'utf8'));
+  } catch (err) {
+    console.error(`Cannot read claims doc (${claimsPath}): ${err.message}`);
+    process.exit(1);
+  }
+  validateClaimsDoc(doc, claimsPath);
+
+  const brandIntel = loadBrandIntel();
+  const { accepted, rejected, warnings, stats } = verifyClaims(doc, bundle);
+  for (const warning of warnings.slice(0, 20)) log(`Warning: ${warning}`);
+  log(`Verification: ${stats.exact} exact + ${stats.fuzzy} fuzzy + ${stats.attested} attested accepted, ${stats.rejected} rejected of ${stats.total}`);
+
+  const opts = {
+    ...args,
+    compare: false,
+    extractor: doc.extractor || 'agent',
+    extractorModel: doc.extractorModel || null,
+    verification: { stats, rejected, warnings }
+  };
+
+  bundle.raw.fetchLog = bundle.fetchLog || null;
+  const catalog = buildEntityCatalog(bundle.raw, [], brandIntel);
+  const result = analyzeClaims(dedupeClaims(accepted), catalog, bundle.raw, brandIntel, opts);
+
+  const format = ['structured', 'raw', 'both', 'json'].includes(args.format) ? args.format : 'structured';
+  const output = serializeResult(result, format);
+  const json = JSON.stringify(output, null, 2);
+
+  if (args.output) {
+    ensureDir(dirname(resolve(args.output)));
+    writeFileSync(resolve(args.output), json, 'utf8');
+    log(`Results written to ${args.output}`);
+  } else {
+    console.log(json);
+  }
+
+  if (args.save) {
+    const currentBrandIntel = loadBrandIntel();
+    const updatedBrandIntel = updateBrandIntel(currentBrandIntel, result.structured, bundle.category);
+    saveBrandIntel(updatedBrandIntel);
+    saveResearch(result, args.saveDir);
+  }
+
+  log(result.structured.stamp);
+}
+
+async function ingestCommand(args) {
+  const bundlePath = args.subAction;
+  const url = args.subArgs[0];
+  if (!bundlePath || !url) {
+    console.error('Usage: research.js ingest <bundle.json> <url> [--platform expert]');
+    process.exit(1);
+  }
+
+  const bundle = loadBundle(bundlePath);
+  const html = await fetchText(url, { 'Accept': 'text/html' });
+  if (!html) {
+    console.error(`Fetch failed or returned empty body: ${url}`);
+    process.exit(1);
+  }
+
+  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+  let source;
+  try {
+    source = appendSource(bundle, {
+      url,
+      title: titleMatch ? titleMatch[1] : '',
+      html,
+      platform: args.platform
+    });
+  } catch (err) {
+    console.error(`Ingest failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  saveBundle(bundle, bundlePath);
+  console.log(JSON.stringify({
+    added: source.id,
+    platform: source.platform,
+    fetchLevel: source.fetchLevel,
+    chars: source.text.length,
+    url
+  }, null, 2));
+}
+
 const HELP = `Usage: research.js <query> [options]
        research.js --compare "Item A" "Item B" [options]
+       research.js collect "<query>" [--depth X] [--category Y] [--out bundle.json]
+       research.js extract <bundle.json> [--out claims.json]
+       research.js score <claims.json> --bundle <bundle.json> [--save] [--format json]
+       research.js ingest <bundle.json> <url> [--platform expert]
        research.js cache <clear|prune>
        research.js watchlist [add|remove|check] [query] [--note "..."]
        research.js feedback <product> --satisfaction <1-10> [--notes "..."] [--brand "..."]
        research.js status
+
+Two-phase mode (agent-driven):
+  collect               Gather raw sources into an ID-addressed bundle. The agent
+                        reads bundle.sources[].text and writes a claims doc
+                        (consensus-research/claims/v1), then runs score.
+  extract               Regex fallback extractor: bundle -> claims doc (no LLM).
+  score                 Verify claim quotes against bundle source text (exact ->
+                        fuzzy -> attested -> rejected), then run convergence
+                        scoring on verified claims only.
+  ingest                CLI-fetch a page and append it to a bundle as a fully
+                        verifiable source (use before agent WebFetch fallback).
 
 Options:
   --category <type>     product|supplement|restaurant|service|software|tech
@@ -2930,6 +3122,29 @@ async function main() {
   if (existsSync(CACHE_DIR)) {
     const pruned = cachePrune();
     if (pruned > 0) log(`Auto-pruned ${pruned} expired cache entries`);
+  }
+
+  try {
+    if (args.subcommand === 'collect') {
+      await collectCommand(args);
+      return;
+    }
+    if (args.subcommand === 'extract') {
+      extractCommand(args);
+      return;
+    }
+    if (args.subcommand === 'score') {
+      await scoreCommand(args);
+      return;
+    }
+    if (args.subcommand === 'ingest') {
+      await ingestCommand(args);
+      return;
+    }
+  } catch (err) {
+    console.error(`Fatal: ${err.message}`);
+    if (process.env.DEBUG) console.error(err.stack);
+    process.exit(1);
   }
 
   if (args.subcommand === 'cache') {
@@ -3112,9 +3327,11 @@ if (require.main === module) {
   main();
 } else {
   module.exports = {
+    analyzeClaims,
     analyzeRawResult,
     buildEntityCatalog,
     buildSignalGroup,
+    buildVerificationStamp,
     buildStructuredComparison,
     buildV5Json,
     cacheKey,

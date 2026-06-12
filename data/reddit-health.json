@@ -1,0 +1,14 @@
+{
+  "status": "healthy",
+  "failures": [
+    {
+      "strategy": "json",
+      "reason": "HTTP 403",
+      "at": "2026-06-12T01:22:26.229Z"
+    }
+  ],
+  "lastSuccess": "2026-06-12T01:23:24.987Z",
+  "strategyStats": {
+    "old-reddit": 1
+  }
+}

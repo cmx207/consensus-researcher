@@ -6,10 +6,23 @@
       "lastSuccess": null
     },
     "ddg": {
-      "status": "healthy",
-      "failures": [],
-      "lastSuccess": "2026-03-25T20:54:24.098Z"
+      "status": "degraded",
+      "failures": [
+        {
+          "reason": "fetch failed",
+          "at": "2026-06-12T01:23:25.010Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:24:58.261Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:24:59.614Z"
+        }
+      ],
+      "lastSuccess": "2026-06-12T01:23:45.138Z"
     }
   },
-  "lastUpdated": "2026-03-25T20:54:24.098Z"
+  "lastUpdated": "2026-06-12T01:24:59.614Z"
 }

@@ -13,11 +13,18 @@ const { dirname, resolve } = require('path');
 
 const BRAVE_API_URL = 'https://api.search.brave.com/res/v1/web/search';
 const DDG_HTML_URL = 'https://html.duckduckgo.com/html/';
+const DDG_LITE_URL = 'https://lite.duckduckgo.com/lite/';
 const HEALTH_PATH = resolve(process.cwd(), 'data/search-health.json');
 
 const BRAVE_COST_PER_QUERY = 0.005;
 
+// DDG bot-detects obvious tool UAs and rapid-fire requests. A browser-like UA
+// plus pacing keeps the anonymous endpoints usable.
+const DDG_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const DDG_MIN_INTERVAL_MS = 1500;
+
 let lastBraveCall = 0;
+let lastDDGCall = 0;
 const apiCalls = { brave: 0, ddg: 0, total: 0 };
 
 function sleep(ms) {
@@ -150,11 +157,16 @@ function parseDDGHtml(html) {
     const urlMatch = block.match(/class="result__a"\s+href="([^"]+)"/);
     if (!urlMatch) continue;
 
-    let url = urlMatch[1];
+    let url = urlMatch[1].replace(/&amp;/g, '&');
     // DDG wraps URLs in redirect: //duckduckgo.com/l/?uddg=ENCODED_URL
     if (url.includes('uddg=')) {
       const uddgMatch = url.match(/uddg=([^&]+)/);
       if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
+    }
+
+    // Skip ads: y.js redirects and ad_domain links never unwrap to organic results.
+    if (url.includes('duckduckgo.com/y.js') || url.includes('ad_domain=') || safeHostname(url).endsWith('duckduckgo.com')) {
+      continue;
     }
 
     // Extract title
@@ -190,36 +202,123 @@ function parseDDGHtml(html) {
   return results;
 }
 
+function isDDGChallengePage(html) {
+  if (!html) return false;
+  if (html.includes('result__a') || html.includes('result-link')) return false;
+  return /anomaly|challenge|botnet|unusual traffic|are you a robot/i.test(html) || html.length < 2000;
+}
+
+/**
+ * lite.duckduckgo.com parser — simple table layout:
+ * <a rel="nofollow" href="URL">Title</a> ... <td class="result-snippet">snippet</td>
+ */
+function parseDDGLiteHtml(html) {
+  const results = [];
+  const linkRe = /<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  const snippets = [...html.matchAll(/<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g)]
+    .map(match => match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+
+  let match;
+  let index = 0;
+  while ((match = linkRe.exec(html)) !== null && results.length < 10) {
+    let url = match[1].replace(/&amp;/g, '&');
+    if (url.includes('uddg=')) {
+      const uddgMatch = url.match(/uddg=([^&]+)/);
+      if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
+    }
+    if (url.includes('duckduckgo.com/y.js') || url.includes('ad_domain=') || safeHostname(url).endsWith('duckduckgo.com')) {
+      index++;
+      continue;
+    }
+    const title = match[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (url.startsWith('http') && title) {
+      results.push({
+        title,
+        url,
+        snippet: snippets[index] || '',
+        source: safeHostname(url),
+        age: null
+      });
+    }
+    index++;
+  }
+
+  return results;
+}
+
+async function ddgRateLimit() {
+  const wait = DDG_MIN_INTERVAL_MS - (Date.now() - lastDDGCall);
+  if (wait > 0) await sleep(wait);
+  lastDDGCall = Date.now();
+}
+
 async function searchDDG(query, count = 5) {
-  const body = `q=${encodeURIComponent(query)}&b=`;
-  let res;
+  // Endpoint 1: html.duckduckgo.com (richer markup)
+  await ddgRateLimit();
+  let html = null;
   try {
-    res = await fetch(DDG_HTML_URL, {
+    const res = await fetch(DDG_HTML_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'ConsensusResearch/5.0'
+        'User-Agent': DDG_UA
       },
-      body
+      body: `q=${encodeURIComponent(query)}&b=`
     });
+    if (res.ok) html = await res.text();
+    else recordFailure('ddg', `HTTP ${res.status}`);
   } catch (err) {
     log(`DDG fetch error: ${err.message}`);
     recordFailure('ddg', err.message);
-    return null;
   }
 
-  if (!res.ok) {
-    log(`DDG ${res.status}`);
-    recordFailure('ddg', `HTTP ${res.status}`);
-    return null;
+  if (html) {
+    apiCalls.ddg++;
+    apiCalls.total++;
+    if (isDDGChallengePage(html)) {
+      log('DDG html endpoint served a challenge page — trying lite endpoint');
+      recordFailure('ddg', 'challenge page (bot detection)');
+    } else {
+      const results = parseDDGHtml(html);
+      if (results.length > 0) {
+        recordSuccess('ddg');
+        return results.slice(0, count);
+      }
+      log('DDG html endpoint returned 0 parseable results from non-empty HTML');
+      recordFailure('ddg', 'parse yielded 0 results from non-empty HTML');
+    }
   }
 
-  apiCalls.ddg++;
-  apiCalls.total++;
-  recordSuccess('ddg');
-
-  const html = await res.text();
-  return parseDDGHtml(html).slice(0, count);
+  // Endpoint 2: lite.duckduckgo.com fallback
+  await ddgRateLimit();
+  try {
+    const res = await fetch(`${DDG_LITE_URL}?q=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': DDG_UA }
+    });
+    if (!res.ok) {
+      recordFailure('ddg', `lite HTTP ${res.status}`);
+      return null;
+    }
+    const liteHtml = await res.text();
+    apiCalls.ddg++;
+    apiCalls.total++;
+    if (isDDGChallengePage(liteHtml)) {
+      log('DDG lite endpoint also served a challenge page — backing off');
+      recordFailure('ddg', 'lite challenge page (bot detection)');
+      return null;
+    }
+    const results = parseDDGLiteHtml(liteHtml);
+    if (results.length > 0) {
+      recordSuccess('ddg');
+      return results.slice(0, count);
+    }
+    recordFailure('ddg', 'lite parse yielded 0 results from non-empty HTML');
+    return null;
+  } catch (err) {
+    log(`DDG lite fetch error: ${err.message}`);
+    recordFailure('ddg', err.message);
+    return null;
+  }
 }
 
 // --- Unified search with fallback ---
@@ -284,6 +383,8 @@ module.exports = {
   searchBrave,
   searchDDG,
   parseDDGHtml,
+  parseDDGLiteHtml,
+  isDDGChallengePage,
   getSearchApiCalls,
   resetSearchApiCalls,
   getSearchCost,
