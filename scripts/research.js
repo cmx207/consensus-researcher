@@ -306,6 +306,8 @@ function cacheGet(query, category, depth, ttlMs, opts = {}) {
     if (age > ttlMs) return null;
     return entry.rawResult || null;
   } catch {
+    // Corrupt cache entry — remove it so it can't poison future runs.
+    try { unlinkSync(file); log(`Removed corrupt cache entry: ${file}`); } catch {}
     return null;
   }
 }
@@ -697,7 +699,17 @@ async function fetchGitHubRepo(repoUrl, searchResult = {}) {
 
   const url = new URL(repoUrl);
   const [owner, repo] = url.pathname.split('/').filter(Boolean);
-  const metrics = html ? parseGitHubRepoMetrics(html) : {};
+  let metrics = {};
+  if (html) {
+    try {
+      metrics = parseGitHubRepoMetrics(html);
+    } catch (err) {
+      log(`GitHub metrics parse failed for ${repoUrl}: ${err.message}`);
+    }
+    if (metrics.stars == null && metrics.openIssues == null && metrics.lastCommitDate == null) {
+      log(`GitHub page yielded no parseable metrics for ${repoUrl} (layout change?)`);
+    }
+  }
 
   return {
     name: displayNameForTerm(repo.replace(/[-_]+/g, ' ')),
@@ -2530,8 +2542,14 @@ function serializeResult(result, format) {
 function watchlistLoad() {
   if (!existsSync(WATCHLIST_PATH)) return { items: [] };
   try {
-    return JSON.parse(readFileSync(WATCHLIST_PATH, 'utf8'));
-  } catch {
+    const parsed = JSON.parse(readFileSync(WATCHLIST_PATH, 'utf8'));
+    if (!Array.isArray(parsed.items)) {
+      log('Watchlist file has no items[] — reinitializing');
+      return { items: [] };
+    }
+    return parsed;
+  } catch (err) {
+    log(`Watchlist file is corrupt (${err.message}) — reinitializing (old file left in place)`);
     return { items: [] };
   }
 }
@@ -2648,7 +2666,7 @@ async function watchlistCheck(deep = false, budget = 3) {
       }
 
       // Deep check: compare themes to original
-      if (deep && item.themes && item.themes.length > 0 && result.structured) {
+      if (deep && result.structured) {
         const newThemes = (result.structured.themes || [])
           .filter(t => t.frequency >= 2)
           .map(t => ({
@@ -2658,46 +2676,53 @@ async function watchlistCheck(deep = false, budget = 3) {
             brand: t.brand
           }));
 
-        const oldThemeSet = new Set(item.themes.map(t => typeof t === 'string' ? t : t.dimension || t));
-        const newIssues = newThemes.filter(t => t.polarity === 'negative' && !oldThemeSet.has(t.dimension));
-        const newStrengths = newThemes.filter(t => t.polarity === 'positive' && !oldThemeSet.has(t.dimension));
-
-        // Check for reformulation keywords
-        const allCommentText = (result.raw?.reddit?.threads || [])
-          .flatMap(t => t.comments.map(c => c.body))
-          .join(' ')
-          .toLowerCase();
-        const reformulationKeywords = ['new formula', 'they changed', 'not the same', 'reformulat', 'different now'];
-        const reformulationDetected = reformulationKeywords.some(kw => allCommentText.includes(kw));
-
-        if (reformulationDetected) {
-          icon = '[!!!]';
-          status += ' | REFORMULATION detected in new sources';
-          recommendation = 'Re-research urgently (possible product change)';
-        }
-
-        if (newIssues.length > 0) {
-          icon = icon === '[ok]' ? '[warn]' : icon;
-          status += ` | NEW ISSUES: ${newIssues.map(t => t.dimension).join(', ')}`;
-          recommendation = recommendation || 'Re-research (new complaint patterns found)';
-        }
-
-        if (newStrengths.length > 0 && icon === '[ok]') {
-          status += ` | new positive signals: ${newStrengths.map(t => t.dimension).join(', ')}`;
-        }
-
-        // Score shift detection
-        const oldBrandScore = item.lastBrandScore;
-        const newBrandScore = result.structured.draftScore?.brandScores
-          ? Math.max(...Object.values(result.structured.draftScore.brandScores))
+        const brandScores = result.structured.draftScore?.brandScores || {};
+        const newBrandScore = Object.keys(brandScores).length > 0
+          ? Math.max(...Object.values(brandScores))
           : null;
-        if (oldBrandScore != null && newBrandScore != null && Math.abs(newBrandScore - oldBrandScore) >= 0.5) {
-          icon = icon === '[ok]' ? '[shift]' : icon;
-          status += ` | SCORE SHIFT: ${oldBrandScore} -> ${newBrandScore}`;
-          recommendation = recommendation || `Score shifted by ${round(newBrandScore - oldBrandScore)} points`;
+
+        const hasBaseline = Array.isArray(item.themes) && item.themes.length > 0;
+        if (hasBaseline) {
+          const oldThemeSet = new Set(item.themes.map(t => typeof t === 'string' ? t : t.dimension || t));
+          const newIssues = newThemes.filter(t => t.polarity === 'negative' && !oldThemeSet.has(t.dimension));
+          const newStrengths = newThemes.filter(t => t.polarity === 'positive' && !oldThemeSet.has(t.dimension));
+
+          // Check for reformulation keywords
+          const allCommentText = (result.raw?.reddit?.threads || [])
+            .flatMap(t => (t.comments || []).map(c => c.body))
+            .join(' ')
+            .toLowerCase();
+          const reformulationKeywords = ['new formula', 'they changed', 'not the same', 'reformulat', 'different now'];
+          const reformulationDetected = reformulationKeywords.some(kw => allCommentText.includes(kw));
+
+          if (reformulationDetected) {
+            icon = '[!!!]';
+            status += ' | REFORMULATION detected in new sources';
+            recommendation = 'Re-research urgently (possible product change)';
+          }
+
+          if (newIssues.length > 0) {
+            icon = icon === '[ok]' ? '[warn]' : icon;
+            status += ` | NEW ISSUES: ${newIssues.map(t => t.dimension).join(', ')}`;
+            recommendation = recommendation || 'Re-research (new complaint patterns found)';
+          }
+
+          if (newStrengths.length > 0 && icon === '[ok]') {
+            status += ` | new positive signals: ${newStrengths.map(t => t.dimension).join(', ')}`;
+          }
+
+          // Score shift detection
+          const oldBrandScore = item.lastBrandScore;
+          if (oldBrandScore != null && newBrandScore != null && Math.abs(newBrandScore - oldBrandScore) >= 0.5) {
+            icon = icon === '[ok]' ? '[shift]' : icon;
+            status += ` | SCORE SHIFT: ${oldBrandScore} -> ${newBrandScore}`;
+            recommendation = recommendation || `Score shifted by ${round(newBrandScore - oldBrandScore)} points`;
+          }
+        } else {
+          status += ' | baseline themes captured (first deep check)';
         }
 
-        // Save new themes
+        // Always save the current baseline — first deep check included.
         watchlist.items[itemIndex].themes = newThemes.map(t => t.dimension);
         watchlist.items[itemIndex].lastBrandScore = newBrandScore;
       }
@@ -2868,6 +2893,17 @@ async function collectCommand(args) {
 
   const bundle = buildBundle(raw, fetchLog.entries(), seeds);
   const outPath = saveBundle(bundle, args.out || defaultBundlePath(query));
+
+  // Persist the fetch log so `status` can report on the last collection run.
+  try {
+    writeFileSync(
+      resolve(process.cwd(), 'data/last-collect-log.json'),
+      JSON.stringify({ query, category, depth, at: new Date().toISOString(), entries: fetchLog.entries() }, null, 2),
+      'utf8'
+    );
+  } catch (err) {
+    log(`Could not persist collect log: ${err.message}`);
+  }
 
   console.log(JSON.stringify({
     bundlePath: outPath,
@@ -3247,6 +3283,27 @@ async function main() {
       console.log('Cache: empty');
     }
 
+    // Last collection run
+    const collectLogPath = resolve(process.cwd(), 'data/last-collect-log.json');
+    if (existsSync(collectLogPath)) {
+      try {
+        const collectLog = JSON.parse(readFileSync(collectLogPath, 'utf8'));
+        const failures = (collectLog.entries || []).filter(entry => !entry.ok);
+        console.log('');
+        console.log(`Last collect: "${collectLog.query}" (${collectLog.at?.split('T')[0] || 'unknown'})`);
+        if (failures.length > 0) {
+          console.log(`  ${failures.length} fetch failures:`);
+          for (const failure of failures.slice(0, 5)) {
+            console.log(`  - ${failure.platform}/${failure.stage}: ${failure.error}`);
+          }
+        } else {
+          console.log('  No fetch failures.');
+        }
+      } catch {
+        console.log('Last collect log: corrupt (will be overwritten on next collect)');
+      }
+    }
+
     // Config
     const config = loadConfig();
     if (config.defaultLocation) {
@@ -3348,6 +3405,7 @@ if (require.main === module) {
     saveConfig,
     serializeResult,
     updateBrandIntel,
-    validateCategory
+    validateCategory,
+    watchlistLoad
   };
 }

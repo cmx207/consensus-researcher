@@ -65,6 +65,8 @@ function cacheGet(url) {
     apiCalls.cacheHits++;
     return entry;
   } catch {
+    // Corrupt cache entry — remove it so it can't poison future runs.
+    try { unlinkSync(file); log(`Removed corrupt cache entry: ${file}`); } catch {}
     return null;
   }
 }
@@ -324,8 +326,17 @@ async function tryOldReddit(ids) {
   const html = await res.text();
   if (!html || html.length < 500) return null;
 
-  const result = parseOldRedditHtml(html, ids);
-  if (result.commentCount === 0 && !result.title) return null;
+  let result;
+  try {
+    result = parseOldRedditHtml(html, ids);
+  } catch (err) {
+    recordFailure('old-reddit', `parse error: ${err.message}`);
+    return null;
+  }
+  if (result.commentCount === 0 && !result.title) {
+    recordFailure('old-reddit', 'parse yielded no title and no comments from non-empty HTML');
+    return null;
+  }
 
   recordSuccess('old-reddit');
   return result;
