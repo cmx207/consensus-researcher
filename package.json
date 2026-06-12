@@ -1,0 +1,13 @@
+{
+  "name": "consensus-researcher",
+  "version": "6.0.0-dev",
+  "description": "Multi-source product, service, and restaurant research using weighted consensus scoring",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -450,6 +450,8 @@ function getRedditHealthSummary() {
 module.exports = {
   fetchRedditThread,
   extractRedditIds,
+  parseCommentTree,
+  parseOldRedditHtml,
   cachePrune: cachePrune,
   getRedditApiCalls,
   resetRedditApiCalls,

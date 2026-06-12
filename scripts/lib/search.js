@@ -283,6 +283,7 @@ module.exports = {
   search,
   searchBrave,
   searchDDG,
+  parseDDGHtml,
   getSearchApiCalls,
   resetSearchApiCalls,
   getSearchCost,

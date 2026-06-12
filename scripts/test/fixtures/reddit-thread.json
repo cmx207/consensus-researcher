@@ -1,0 +1,78 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "abc123",
+            "title": "Best creatine brand?",
+            "selftext": "Looking for a creatine that dissolves well and is third party tested.",
+            "ups": 230,
+            "subreddit": "Supplements"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "c1",
+            "author": "lifter42",
+            "score": 412,
+            "body": "Nutricost dissolves instantly in water, no gritty texture at all.",
+            "replies": {
+              "data": {
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "id": "c2",
+                      "author": "gymrat",
+                      "score": 88,
+                      "body": "Agreed, switched from BulkSupplements and never looked back.",
+                      "replies": ""
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "c3",
+            "author": "AutoModerator",
+            "score": 1,
+            "body": "Reminder: read the subreddit rules before posting.",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "c4",
+            "author": "skeptic99",
+            "score": 12,
+            "body": "",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "more",
+          "data": {
+            "count": 57,
+            "children": ["c5", "c6"]
+          }
+        }
+      ]
+    }
+  }
+]

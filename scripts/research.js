@@ -3114,10 +3114,13 @@ if (require.main === module) {
   module.exports = {
     analyzeRawResult,
     buildEntityCatalog,
+    buildSignalGroup,
     buildStructuredComparison,
     buildV5Json,
     cacheKey,
+    chooseMajorityPolarity,
     computeDraftScore,
+    dedupeClaims,
     extractClaims,
     generateBrandIntelMd,
     groupThemes,
