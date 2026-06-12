@@ -20,6 +20,10 @@ const { addFeedback, getCalibrationNote, getFeedbackSummary, loadFeedback } = re
 const { buildBundle, loadBundle, saveBundle, appendSource } = require('./lib/bundle');
 const { verifyClaims, validateClaimsDoc, CLAIMS_SCHEMA } = require('./lib/verify');
 const { createFetchLog } = require('./lib/fetchlog');
+const { searchHN } = require('./lib/hn');
+const { searchLemmy } = require('./lib/lemmy');
+const { searchForums, CATEGORY_FORUMS } = require('./lib/forums');
+const { fetchPage } = require('./lib/fetchpage');
 
 const SCHEMA_VERSION = 'v6';
 const BRAND_INTEL_SCHEMA_VERSION = 1;
@@ -793,12 +797,16 @@ function buildEmptyRawResult(query, category, depth) {
     youtube: { results: [] },
     twitter: { results: [] },
     github: { repos: [] },
+    hn: { threads: [] },
+    forums: { threads: [], pages: [] },
+    lemmy: { threads: [] },
+    pages: [],
     alternatives: [],
     priceData: [],
     comparison: null,
     freshness: null,
     dataSufficiency: 'LOW',
-    sourceCount: { reddit: 0, amazon: 0, web: 0, youtube: 0, twitter: 0, github: 0 },
+    sourceCount: { reddit: 0, amazon: 0, web: 0, youtube: 0, twitter: 0, github: 0, hn: 0, forum: 0, lemmy: 0, pages: 0 },
     apiCost: null
   };
 }
@@ -813,21 +821,32 @@ function inferSourceTypeFromWebResult(result) {
 }
 
 function calcDataSufficiency(raw) {
-  const redditCount = raw.reddit?.threads?.length || 0;
-  const totalComments = (raw.reddit?.threads || []).reduce((sum, thread) => sum + thread.commentCount, 0);
+  const discussionThreads = [
+    ...(raw.reddit?.threads || []),
+    ...(raw.hn?.threads || []),
+    ...(raw.forums?.threads || []),
+    ...(raw.lemmy?.threads || [])
+  ];
+  const threadCount = discussionThreads.length;
+  const totalComments = discussionThreads.reduce((sum, thread) => sum + thread.commentCount, 0);
 
-  const sourceTypes = new Set();
-  if (redditCount > 0) sourceTypes.add('reddit');
+  const discussionTypes = new Set();
+  if ((raw.reddit?.threads?.length || 0) > 0) discussionTypes.add('reddit');
+  if ((raw.hn?.threads?.length || 0) > 0) discussionTypes.add('hn');
+  if ((raw.forums?.threads?.length || 0) > 0) discussionTypes.add('forum');
+  if ((raw.lemmy?.threads?.length || 0) > 0) discussionTypes.add('lemmy');
+
+  const sourceTypes = new Set(discussionTypes);
   if ((raw.amazon?.products?.length || 0) > 0) sourceTypes.add('amazon');
-  if ((raw.web?.results?.length || 0) > 0) sourceTypes.add('web');
+  if ((raw.web?.results?.length || 0) > 0 || (raw.pages?.length || 0) > 0) sourceTypes.add('web');
   if ((raw.youtube?.results?.length || 0) > 0) sourceTypes.add('youtube');
   if ((raw.twitter?.results?.length || 0) > 0) sourceTypes.add('twitter');
   if ((raw.github?.repos?.length || 0) > 0) sourceTypes.add('github');
 
-  const otherSourceCount = sourceTypes.size - (sourceTypes.has('reddit') ? 1 : 0);
+  const otherSourceCount = sourceTypes.size - discussionTypes.size;
 
-  if (redditCount >= 3 && totalComments >= 20 && otherSourceCount >= 2) return 'HIGH';
-  if ((redditCount >= 1 || totalComments >= 10) && otherSourceCount >= 1) return 'MEDIUM';
+  if (threadCount >= 3 && totalComments >= 20 && otherSourceCount >= 2) return 'HIGH';
+  if ((threadCount >= 1 || totalComments >= 10) && otherSourceCount >= 1) return 'MEDIUM';
   if ((raw.github?.repos?.length || 0) > 0 && otherSourceCount >= 1) return 'MEDIUM';
   return 'LOW';
 }
@@ -1002,6 +1021,58 @@ async function collectRawData(query, opts, fetchLog = null) {
     }
   }
 
+  // HackerNews: Tier 1 for software/tech, supplementary at deep for the rest.
+  if (category === 'software' || category === 'tech' || depth === 'deep') {
+    log('Searching HackerNews...');
+    try {
+      raw.hn = await searchHN(baseQuery, depth === 'quick' ? 1 : 3);
+    } catch (err) {
+      log(`HackerNews failed: ${err.message}`);
+      fetchLog?.record({ platform: 'hn', stage: 'search', ok: false, error: err.message });
+    }
+  }
+
+  // Niche forums for mapped categories (standard+).
+  if (depth !== 'quick' && (CATEGORY_FORUMS[category] || []).length > 0) {
+    log('Searching niche forums...');
+    try {
+      raw.forums = await searchForums(baseQuery, category, 2, fetchLog);
+    } catch (err) {
+      log(`Forums failed: ${err.message}`);
+      fetchLog?.record({ platform: 'forum', stage: 'search', ok: false, error: err.message });
+    }
+  }
+
+  // Lemmy redundancy (deep only — low volume).
+  if (depth === 'deep') {
+    log('Searching Lemmy...');
+    try {
+      raw.lemmy = await searchLemmy(baseQuery, 2);
+    } catch (err) {
+      log(`Lemmy failed: ${err.message}`);
+      fetchLog?.record({ platform: 'lemmy', stage: 'search', ok: false, error: err.message });
+    }
+  }
+
+  // Full-text upgrade: fetch top expert pages instead of settling for snippets.
+  if (depth !== 'quick') {
+    const expertResults = (raw.web?.results || [])
+      .filter(result => inferSourceTypeFromWebResult(result) === 'expert')
+      .slice(0, 3);
+    if (expertResults.length > 0) {
+      log(`Fetching ${expertResults.length} expert pages (full text)...`);
+      for (const result of expertResults) {
+        const page = await fetchPage(result.url);
+        if (page.ok) {
+          raw.pages.push({ url: result.url, title: page.title || result.title, text: page.text });
+        } else {
+          log(`Expert page failed: ${result.url} — ${page.error}`);
+          fetchLog?.record({ platform: 'web', stage: 'fetch', url: result.url, ok: false, error: page.error });
+        }
+      }
+    }
+  }
+
   if (depth === 'deep') {
     log('Searching YouTube...');
     try {
@@ -1031,7 +1102,11 @@ async function collectRawData(query, opts, fetchLog = null) {
     web: raw.web.results.length,
     youtube: raw.youtube.results.length,
     twitter: raw.twitter.results.length,
-    github: raw.github.repos.length
+    github: raw.github.repos.length,
+    hn: raw.hn.threads.length,
+    forum: raw.forums.threads.length + raw.forums.pages.length,
+    lemmy: raw.lemmy.threads.length,
+    pages: raw.pages.length
   };
   raw.dataSufficiency = calcDataSufficiency(raw);
   raw.apiCost = getApiCost();
@@ -1188,6 +1263,11 @@ function buildEntityCatalog(raw, compareExplicit, brandIntel) {
 
   const textSources = [
     ...(raw.reddit?.threads || []).flatMap(thread => [thread.title, thread.selftext, ...thread.comments.map(comment => comment.body)]),
+    ...(raw.hn?.threads || []).flatMap(thread => [thread.title, thread.selftext, ...thread.comments.map(comment => comment.body)]),
+    ...(raw.forums?.threads || []).flatMap(thread => [thread.title, thread.selftext, ...thread.comments.map(comment => comment.body)]),
+    ...(raw.lemmy?.threads || []).flatMap(thread => [thread.title, thread.selftext, ...thread.comments.map(comment => comment.body)]),
+    ...(raw.pages || []).map(page => page.title),
+    ...(raw.forums?.pages || []).map(page => page.title),
     ...(raw.web?.results || []).flatMap(result => [result.title, result.snippet]),
     ...(raw.amazon?.products || []).flatMap(product => [product.title, product.snippet]),
     ...(raw.youtube?.results || []).flatMap(result => [result.title, result.snippet]),
@@ -1445,6 +1525,62 @@ function extractClaims(raw, brandIntel, opts) {
         aliasIndex
       }));
     });
+  }
+
+  const discussionGroups = [
+    { threads: raw.hn?.threads || [], sourceType: 'hn' },
+    { threads: raw.forums?.threads || [], sourceType: 'forum' },
+    { threads: raw.lemmy?.threads || [], sourceType: 'lemmy' }
+  ];
+  for (const group of discussionGroups) {
+    for (const thread of group.threads) {
+      const threadId = thread.url || `${group.sourceType}:${thread.postId}`;
+      const postText = [thread.title, thread.selftext].filter(Boolean).join('. ');
+      if (postText) {
+        claims.push(...extractClaimsFromText({
+          text: postText,
+          sourceType: group.sourceType,
+          sourceId: `${threadId}#post`,
+          independentSourceId: threadId,
+          score: thread.upvotes,
+          scoreKind: 'upvotes',
+          url: thread.url,
+          category: raw.category,
+          aliasIndex
+        }));
+      }
+      thread.comments.forEach((comment, index) => {
+        claims.push(...extractClaimsFromText({
+          text: comment.body,
+          sourceType: group.sourceType,
+          sourceId: `${threadId}#${comment.id || index}`,
+          independentSourceId: threadId,
+          score: comment.score,
+          scoreKind: 'upvotes',
+          url: thread.url,
+          category: raw.category,
+          aliasIndex
+        }));
+      });
+    }
+  }
+
+  const fullTextPages = [
+    ...(raw.pages || []).map(page => ({ ...page, sourceType: 'expert' })),
+    ...(raw.forums?.pages || []).map(page => ({ ...page, sourceType: 'forum' }))
+  ];
+  for (const page of fullTextPages) {
+    claims.push(...extractClaimsFromText({
+      text: page.text,
+      sourceType: page.sourceType,
+      sourceId: page.url,
+      independentSourceId: page.url,
+      score: null,
+      scoreKind: null,
+      url: page.url,
+      category: raw.category,
+      aliasIndex
+    }));
   }
 
   for (const product of raw.amazon?.products || []) {
@@ -1988,8 +2124,10 @@ function buildSourceSummary(raw) {
   const summary = {
     reddit: raw.sourceCount.reddit,
     amazon: raw.sourceCount.amazon,
-    expert: 0,
-    hn: 0,
+    expert: raw.sourceCount.pages || 0,
+    hn: raw.sourceCount.hn || 0,
+    forum: raw.sourceCount.forum || 0,
+    lemmy: raw.sourceCount.lemmy || 0,
     youtube: raw.sourceCount.youtube,
     github: raw.sourceCount.github,
     twitter: raw.sourceCount.twitter

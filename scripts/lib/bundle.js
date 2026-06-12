@@ -81,31 +81,52 @@ function buildSources(raw) {
     return id;
   };
 
-  for (const thread of raw.reddit?.threads || []) {
-    push({
-      platform: 'reddit',
-      kind: 'thread',
-      fetchLevel: 'full',
-      url: thread.url,
-      title: thread.title || '',
-      text: cleanupText([thread.title, thread.selftext].filter(Boolean).join('. ')),
-      segments: (thread.comments || []).map((comment, index) => ({
-        id: `c${index}`,
-        text: comment.body,
-        score: comment.score ?? null,
-        scoreKind: 'upvotes',
-        author: comment.author || null,
-        depth: comment.depth ?? 0
-      })),
-      meta: {
-        subreddit: thread.subreddit || null,
-        upvotes: thread.upvotes ?? null,
-        commentCount: thread.commentCount ?? 0,
-        strategy: thread.strategy || null
-      },
-      agentFetchSuggested: false
-    });
-  }
+  const pushThread = (thread, platform) => push({
+    platform,
+    kind: 'thread',
+    fetchLevel: 'full',
+    url: thread.url,
+    title: thread.title || '',
+    text: cleanupText([thread.title, thread.selftext].filter(Boolean).join('. ')),
+    segments: (thread.comments || []).map((comment, index) => ({
+      id: `c${index}`,
+      text: comment.body,
+      score: comment.score ?? null,
+      scoreKind: 'upvotes',
+      author: comment.author || null,
+      depth: comment.depth ?? 0
+    })),
+    meta: {
+      subreddit: thread.subreddit || null,
+      upvotes: thread.upvotes ?? null,
+      commentCount: thread.commentCount ?? 0,
+      strategy: thread.strategy || null
+    },
+    agentFetchSuggested: false
+  });
+
+  for (const thread of raw.reddit?.threads || []) pushThread(thread, 'reddit');
+  for (const thread of raw.hn?.threads || []) pushThread(thread, 'hn');
+  for (const thread of raw.forums?.threads || []) pushThread(thread, 'forum');
+  for (const thread of raw.lemmy?.threads || []) pushThread(thread, 'lemmy');
+
+  const fullPageUrls = new Set([
+    ...(raw.pages || []).map(page => page.url),
+    ...(raw.forums?.pages || []).map(page => page.url)
+  ]);
+  const pushPage = (page, platform) => push({
+    platform,
+    kind: 'page',
+    fetchLevel: 'full',
+    url: page.url,
+    title: page.title || '',
+    text: String(page.text || '').slice(0, MAX_PAGE_TEXT),
+    segments: [],
+    meta: {},
+    agentFetchSuggested: false
+  });
+  for (const page of raw.pages || []) pushPage(page, 'expert');
+  for (const page of raw.forums?.pages || []) pushPage(page, 'forum');
 
   for (const product of raw.amazon?.products || []) {
     push({
@@ -128,7 +149,8 @@ function buildSources(raw) {
   let expertSuggested = 0;
   for (const result of raw.web?.results || []) {
     const platform = inferWebPlatform(result.url);
-    const suggested = platform === 'expert' && expertSuggested < 3;
+    // No agent fetch needed if we already hold the full page text.
+    const suggested = platform === 'expert' && expertSuggested < 3 && !fullPageUrls.has(result.url);
     if (suggested) expertSuggested++;
     push({
       platform,
