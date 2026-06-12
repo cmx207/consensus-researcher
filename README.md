@@ -1,152 +1,132 @@
-# Consensus Research
+# Consensus Research v6
 
-Multi-source product, service, and restaurant research using weighted consensus scoring. Finds truth at the intersection of independent review platforms.
+Multi-source product, service, and restaurant research using weighted consensus scoring — with **verified-quote claims**. Finds truth at the intersection of independent review platforms, and refuses to present evidence it can't trace to fetched source text.
+
+Forked from [Bryptobricks/consensus-researcher](https://github.com/Bryptobricks/consensus-researcher) (v5) and rebuilt around a two-phase, agent-driven architecture.
 
 ## How It Works
 
-Instead of trusting any single source, this skill aggregates reviews from Reddit, Amazon, expert sites, YouTube, Twitter/X, and niche forums — then scores products based on **cross-platform convergence**. If 3+ independent sources agree on a strength or flaw, it's probably real.
-
-### The Core Principle
+Instead of trusting any single source, this skill aggregates Reddit, HackerNews, Amazon, expert sites, niche forums, Lemmy, YouTube, Twitter/X, and GitHub — then scores products on **cross-platform convergence**. If 3+ independent sources agree on a strength or flaw, it's probably real.
 
 > A complaint on 1 platform is anecdotal. On 2 platforms, it's notable. On 3+, it's confirmed.
 
-## Features
+### The v6 difference: two-phase research with quote verification
 
-- **Reddit Deep Read** — Fetches full comment trees via Reddit's JSON endpoint (no API key needed). This is where 60%+ of the signal lives.
-- **Twitter/X Dual Signal Pass** — Scans X for both complaints AND positive signal. Catches real-time sentiment shifts, product changes, and usage patterns faster than any other platform.
-- **Temporal Scoping** — `--recent` or `--since 30d` to scope all searches to a time window. Auto-scopes by category (software: 6mo, restaurants: 12mo, supplements: no scope). Sources outside the window get half weight or context-only.
-- **Pattern Extraction** — For software, tools, and protocols: extracts HOW people actually use it (workflows, configs, power-user tips, anti-patterns), not just whether they like it. Auto-activates for applicable categories.
-- **Weighted Source Hierarchy** — Reddit/HackerNews (HIGH) → Wirecutter/niche forums (MEDIUM-HIGH) → Amazon verified/X (MEDIUM) → Trustpilot/generic reviews (LOW)
-- **Convergence Scoring** — 1-10 scale with severity multipliers. Safety issues hit harder than cosmetic complaints.
-- **Category-Aware** — Products, supplements, restaurants, services, tech, software — each with tuned source maps and temporal decay rates.
-- **Brand Intel Database** — Persistent reputation signals learned across research runs. Brands get flagged or trusted based on accumulated evidence.
-- **Price Normalization** — Cost-per-serving at recommended dose, not just container price.
-- **Competitor Auto-Discovery** — Finds alternatives organically from "switched from X" and "wish I got Y" patterns in reviews.
-- **Data Sufficiency Gate** — Won't produce a confident score on thin data. LOW confidence = honest caveats.
-- **Research Freshness Tracking** — Category-specific decay (restaurants: 6mo, supplements: 2yr, durable goods: 3yr). Temporal scoring weights recent sources higher.
-- **Head-to-Head Comparison** — Simple differentiators between top 2 candidates: shared/unique strengths, issues, price winner.
-- **Search Provider Fallback** — Brave → DuckDuckGo automatic failover. Works with zero API keys configured.
-- **Reddit Resilience** — 3-strategy cascade (JSON endpoint → old.reddit HTML parse → web_fetch) with 7-day content cache. Reddit going down no longer kills research.
-- **Scoring Calibration** — Tracks your actual satisfaction vs predicted scores. After 5+ data points, detects bias and adjusts future confidence notes.
-- **Smart Watchlist (Deep Mode)** — `--deep` re-reads new content, compares themes to original research, flags reformulations and score shifts.
-- **Geographic Awareness** — Auto-detects location-dependent queries (restaurants, services). `--location` flag or default in config.
-- **Structured JSON Output** — `--format json` for machine-readable results. Canonical v5 schema for downstream tool consumption.
-- **System Health Dashboard** — `research.js status` shows provider health, Reddit resilience state, calibration accuracy, watchlist summary.
-- **File-Based Cache** — MD5-keyed query cache (30min TTL, 2hr for quick mode). No wasted API calls on repeat queries.
-- **Auto-Save** — `--save` flag writes a readable markdown report + raw JSON to `memory/research/` with auto-generated filenames.
-- **Cost Tracking** — Counts every Brave Search and Reddit API call per run. Shows estimated cost in output and stderr.
-- **Product Watchlist** — Track products you care about. `watchlist check` re-runs quick research and detects changes in source counts.
-- **Comment Score Filter** — `--min-score N` drops low-upvote Reddit comments before analysis, cutting noise from large threads.
+v5 extracted claims with regex keyword matching — it couldn't tell "great" from "not great". v6 splits research into phases so an LLM agent does the reading:
 
-## Research Depth Modes
+```
+1. COLLECT   research.js collect "query" --out bundle.json
+             CLI fetches sources into an ID-addressed bundle (full Reddit/HN/
+             forum threads, full expert article text, Amazon/X/YouTube snippets)
 
-| Mode | When to Use | Sources |
-|------|-------------|---------|
-| **Quick** | Simple Amazon purchases under $50 | 2-3 searches, 1 Reddit deep read |
-| **Standard** | Most research (default) | Reddit (2-3 threads), Amazon, expert sites, X dual-pass, temporal scoping |
-| **Deep** | Health products, $200+, ongoing commitments | Standard + YouTube transcripts + full pattern extraction + sub-agent parallelization |
+2. EXTRACT   The agent (Claude Code / OpenClaw) reads bundle.sources and writes
+             claims: brand × dimension × polarity + a VERBATIM quote.
+             Handles negation, sarcasm, conditionals, comparisons.
+             (No agent? `research.js extract` is the regex fallback.)
+
+3. SCORE     research.js score claims.json --bundle bundle.json
+             Every quote is verified against the bundle's source text:
+             exact match → in-order fuzzy (≥85% tokens, blocks fabrication) →
+             attested (agent-fetched pages) → REJECTED (excluded from scoring,
+             reported with reason). Verified claims flow into convergence scoring.
+
+4. REPORT    Every output ends with a verification stamp:
+             [OK] Verified — 14 sources, 41/47 claims quote-verified
+             (38 exact, 3 fuzzy), 2 attested, 4 rejected | extractor: agent | v6
+```
+
+The agent's judgment is the intelligence; the CLI is the accountability layer.
+
+## Sources
+
+| Tier | Sources | Weight | Fetch level |
+|------|---------|--------|-------------|
+| 1 | Reddit (3-strategy fallback + cache), HackerNews (Algolia API, full comment trees) | HIGH | Full threads |
+| 2 | Expert sites (full article text at standard+), niche forums (Discourse JSON when available), YouTube | MEDIUM-HIGH | Full / snippet |
+| 3 | Amazon, Twitter/X, Lemmy (deep mode) | MEDIUM | Snippet / full |
+| 4 | Trustpilot, generic review sites | LOW | Snippet |
+
+Niche forums are mapped per category (head-fi/audiosciencereview for tech, longecity for supplements, …) with automatic Discourse detection for full structured posts.
+
+## Reliability ("must know 100%")
+
+- **Quote verification** — fabricated or paraphrased quotes are rejected before scoring and listed in the report with reasons.
+- **Fetch log** — every platform failure is recorded per-run and surfaced in output and `research.js status`. "No complaints found" and "platform was down" are never conflated.
+- **Loud degradation** — DDG bot-challenge pages, parser zero-yields on non-empty HTML, and corrupt cache/state files are detected, logged, and recovered — never silently swallowed.
+- **Search fallback chain** — Brave (if `BRAVE_API_KEY` set) → DuckDuckGo html → DuckDuckGo lite, with health tracking and ad filtering.
+- **Test suite** — 59 fixture-based tests over scoring math, parsers, verification, bundles, and platform mappers: `npm test`.
 
 ## Usage
 
-This is an [OpenClaw](https://github.com/openclaw/openclaw) skill. Install it in your OpenClaw workspace:
+### As an agent skill (the intended way)
+
+Works as a [Claude Code](https://claude.com/claude-code) skill and an [OpenClaw](https://github.com/openclaw/openclaw) skill from the same `SKILL.md`. Drop the repo into your skills directory and ask the agent to research something — it runs the full collect → extract → verify → score loop and delivers the compact report.
+
+### CLI
 
 ```bash
-# Clone into your skills directory
-cd ~/your-workspace/skills
-git clone https://github.com/Bryptobricks/consensus-researcher.git
-```
+# Two-phase (agent-driven)
+node scripts/research.js collect "creatine monohydrate" --depth standard --out bundle.json
+node scripts/research.js extract bundle.json --out claims.json     # regex fallback
+node scripts/research.js score claims.json --bundle bundle.json --save --format json
+node scripts/research.js ingest bundle.json https://labdoor.com/review/x   # add a page as verifiable source
 
-Then ask your agent to research something — it'll detect the skill automatically from your query context.
+# Legacy one-shot (regex extraction, cron-friendly)
+node scripts/research.js "glycine powder" --category supplement --save
+node scripts/research.js "cursor vs zed" --category software
+node scripts/research.js --compare "Sony WH-1000XM5" "Bose QC Ultra" --category tech
 
-### Research Runner (CLI)
-
-The `scripts/research.js` CLI automates data collection:
-
-```bash
-# Standard supplement research (works with or without BRAVE_API_KEY)
-node scripts/research.js "glycine powder" --category supplement
-
-# Recent-only research (last 30 days)
-node scripts/research.js "cursor IDE" --since 30d
-
-# Deep research with head-to-head comparison
-node scripts/research.js "lion's mane" --depth deep --compare "Nootropics Depot" "Real Mushrooms"
-
-# Quick product check
-node scripts/research.js "USB-C hub" --depth quick
-
-# Location-aware research
-node scripts/research.js "best ramen" --location "Los Angeles"
-
-# JSON output for downstream tools
-node scripts/research.js "creatine" --format json
-
-# Auto-save results as markdown + JSON
-node scripts/research.js "creatine monohydrate" --save
-
-# Filter out low-quality Reddit comments
-node scripts/research.js "protein powder" --min-score 5
-
-# Post-purchase feedback (improves future accuracy)
-node scripts/research.js feedback "creatine monohydrate" --satisfaction 8 --notes "great results"
-
-# Smart watchlist with deep theme comparison
+# Watchlist & feedback
 node scripts/research.js watchlist add "Nutricost creatine" --note "daily supplement"
-node scripts/research.js watchlist check --deep    # re-research, detect theme shifts
-node scripts/research.js watchlist check           # shallow count check
+node scripts/research.js watchlist check --deep            # theme shifts, reformulations
+node scripts/research.js watchlist check --deep --json     # machine-readable, cron-friendly
+node scripts/research.js feedback "creatine" --satisfaction 8   # calibrates future scoring
 
-# System health
-node scripts/research.js status    # provider health, calibration, watchlist summary
-
-# Cache management
-node scripts/research.js cache clear
+# Health
+node scripts/research.js status    # provider health, last collect failures, calibration
 ```
 
-**Requirements:** Node.js 18+. Brave Search API key optional ([free tier: 2K queries/mo](https://brave.com/search/api/)) — DuckDuckGo fallback always available.
+**Requirements:** Node.js 18+. Zero npm dependencies. `BRAVE_API_KEY` strongly recommended ([free tier: 2K queries/mo](https://brave.com/search/api/)) — the DDG fallback works but bot-challenges under heavy use.
+
+### Scheduled checks (Windows Task Scheduler)
+
+```powershell
+schtasks /create /tn "ConsensusWatchlist" /sc weekly /d SUN /st 09:00 `
+  /tr "node C:\path\to\consensus-researcher\scripts\research.js watchlist check --deep --json"
+```
+
+Or from an OpenClaw cron job: `node scripts/research.js watchlist check --deep --json` and surface items with `"flagged": true`.
 
 ## File Structure
 
 ```
-consensus-research/
-├── SKILL.md                      # Full skill spec (OpenClaw reads this)
+consensus-researcher/
+├── SKILL.md                      # Agent orchestration spec (Claude Code + OpenClaw)
 ├── scripts/
-│   ├── research.js               # CLI runner — research, feedback, watchlist, status
-│   └── lib/
-│       ├── search.js             # Search provider abstraction (Brave → DDG fallback)
-│       ├── reddit.js             # Reddit resilience layer (3-strategy + cache)
-│       └── feedback.js           # Scoring calibration & feedback loop
-├── data/
-│   ├── cache/                    # MD5-keyed query cache (auto-managed)
-│   ├── reddit-cache/             # Reddit thread cache (7-day TTL)
-│   ├── config.json               # Default location + settings
-│   ├── feedback.json             # Calibration data (auto-created on first feedback)
-│   ├── search-health.json        # Search provider health tracking
-│   └── watchlist.json            # Product watchlist with theme tracking
-├── memory/
-│   └── research/                 # Auto-saved research reports (.md + .json)
-├── references/
-│   ├── methodology.md            # Scoring framework, source weights, decay rates
-│   ├── schema.json               # Canonical v5 JSON output schema
-│   ├── brand-intel.json          # Persistent brand reputation data (machine-readable)
-│   └── brand-intel.md            # Persistent brand reputation database (human-readable)
-└── specs/
-    └── v5-improvements.md        # v5 improvement spec (reference)
+│   ├── research.js               # CLI: collect/extract/score/ingest + legacy one-shot,
+│   │                             # watchlist, feedback, status, cache
+│   ├── lib/
+│   │   ├── taxonomy.js           # Dimension taxonomy (single source of truth)
+│   │   ├── bundle.js             # Collection bundle build/validate (collect/v1)
+│   │   ├── verify.js             # Quote verification (exact/fuzzy/attested/rejected)
+│   │   ├── fetchlog.js           # Per-run fetch failure tracking
+│   │   ├── search.js             # Brave → DDG html → DDG lite, health + ad filtering
+│   │   ├── reddit.js             # 3-strategy Reddit cascade + cache
+│   │   ├── hn.js                 # HackerNews via Algolia (full comment trees)
+│   │   ├── forums.js             # Niche forums with Discourse detection
+│   │   ├── lemmy.js              # lemmy.world API (deep mode)
+│   │   ├── fetchpage.js          # Generic static-page fetcher (expert full text, ingest)
+│   │   ├── cache.js              # Shared file-cache helper
+│   │   └── feedback.js           # Scoring calibration
+│   └── test/                     # node:test suite (npm test)
+├── references/                   # methodology, schema, brand intel database
+├── data/                         # caches, watchlist, health, bundles (gitignored)
+└── memory/research/              # saved reports (.md + .json)
 ```
-
-## Source Hierarchy
-
-| Tier | Sources | Weight | Why |
-|------|---------|--------|-----|
-| 1 | Reddit, HackerNews | HIGH | Real users, no financial incentive |
-| 2 | Wirecutter, rtings, niche forums, YouTube | MEDIUM-HIGH | Methodology-driven, actually test products |
-| 3 | Amazon verified, Google Reviews, Twitter/X | MEDIUM | Good volume, filter for signal. X dual-pass catches both complaints and positive patterns |
-| 4 | Trustpilot, generic review sites | LOW | Gamed, but patterns visible in volume |
 
 ## Scoring
 
-Baseline **5.0** (neutral). Each confirmed strength across 3+ sources: **+0.5**. Each confirmed issue: **-0.5**. Severity multipliers: safety = -1.5, major failure = -1.0, minor = -0.25.
-
-**Temporal scoring:** Sources within the category half-life get full weight. 1-2x half-life = half weight. Beyond 2x = context only.
+Baseline **5.0**. Confirmed strength (3+ independent sources): **+0.5** (+0.75 for testing/purity/maintenance/adoption). Confirmed issue: severity-weighted — safety **−1.5**, effectiveness **−1.0**, quality **−0.5**, value/taste **−0.25**; 2-source issues at half weight. Safety issues at 2+ sources disqualify a brand from top pick. Range 1.0–10.0.
 
 | Score | Verdict |
 |-------|---------|
@@ -155,27 +135,22 @@ Baseline **5.0** (neutral). Each confirmed strength across 3+ sources: **+0.5**.
 | 4.5–6.4 | Mixed |
 | < 4.5 | Avoid |
 
-## What's New (v5)
+**Stamp tiers:** `[OK] Verified` needs <15% claim rejection and 3+ source types; agent-fetched ("attested") evidence outnumbering CLI-verified evidence caps at `[WARN]`; regex extraction caps at `[WARN]` unless data sufficiency is HIGH.
 
-- **Search Provider Fallback** — Brave → DuckDuckGo auto-fallback. BRAVE_API_KEY no longer required. DDG always available as backup.
-- **Reddit Resilience Layer** — 3-strategy fetch cascade (JSON → old.reddit HTML → web_fetch) + 7-day content cache + health tracking. No more single point of failure.
-- **Scoring Calibration** — `feedback` command tracks predicted score vs actual satisfaction. After 5+ entries, detects systematic bias and surfaces calibration notes on future research.
-- **Smart Watchlist** — `watchlist check --deep` reads new content since last research, compares themes, detects reformulations, flags score shifts. Budget-capped per check.
-- **Geographic Awareness** — `--location` flag for location-dependent queries. Auto-detects restaurants/services. Default location in `data/config.json`.
-- **JSON Schema v5** — `--format json` outputs canonical structured data. Machine-readable research results for downstream tools.
-- **System Health** — `research.js status` shows search provider health, Reddit health, calibration state, and watchlist summary.
+## What's New (v6)
 
-### v4 (previous)
-- Temporal Scoping (`--recent`/`--since` flags + auto-scope by category)
-- Twitter/X Dual Signal (positive + complaint pass)
-- Pattern Extraction (usage workflows, power-user techniques, anti-patterns)
-- Temporal Scoring (sources weighted by age relative to category half-life)
+- Two-phase collect/score architecture — the agent reads, the CLI verifies
+- Claim quote verification: exact → in-order fuzzy → attested → rejected
+- Verification stamp with full counts on every output
+- HackerNews via Algolia (full comment trees, Tier 1)
+- Full-text expert pages at standard+ depth (was: snippets only)
+- Niche forums with Discourse JSON detection; Lemmy at deep
+- Fetch log: platform failures are data, not stderr noise
+- DDG hardening: ad filtering, bot-challenge detection, lite-endpoint fallback
+- Watchlist `--json` for cron; first-deep-check baseline fix
+- 59-test suite (was: zero tests)
 
-## Examples
-
-**Glycine Powder Research** — Nutricost recommended over NOW Foods after Reddit deep reads revealed 4 independent complaints about NOW's glycine specifically (invisible in search snippets).
-
-**Lion's Mane Research** — Nootropics Depot 8:1 Dual Extract scored 8.0/10 (best quality). Real Mushrooms = best value at $0.25/day. Host Defense FLAGGED — mycelium on grain, up to 70% rice filler.
+See [SKILL.md](SKILL.md) for agent orchestration and `references/methodology.md` for the full scoring spec.
 
 ## License
 

@@ -2,4 +2,8 @@ node_modules/
 data/cache/*.json
 data/bundles/
 data/reddit-cache/
+data/hn-cache/
+data/lemmy-cache/
+data/forum-cache/
+data/page-cache/
 data/last-collect-log.json

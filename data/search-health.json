@@ -6,7 +6,7 @@
       "lastSuccess": null
     },
     "ddg": {
-      "status": "degraded",
+      "status": "blocked",
       "failures": [
         {
           "reason": "fetch failed",
@@ -19,10 +19,74 @@
         {
           "reason": "lite challenge page (bot detection)",
           "at": "2026-06-12T01:24:59.614Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:35:18.313Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:35:19.567Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:35:19.672Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:35:21.078Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:35:22.573Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:35:22.637Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:35:24.090Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:35:24.163Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:35:25.597Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:35:27.126Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:37:50.979Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:37:52.149Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:37:52.221Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:37:53.667Z"
+        },
+        {
+          "reason": "challenge page (bot detection)",
+          "at": "2026-06-12T01:37:55.178Z"
+        },
+        {
+          "reason": "lite challenge page (bot detection)",
+          "at": "2026-06-12T01:37:56.690Z"
         }
       ],
       "lastSuccess": "2026-06-12T01:23:45.138Z"
     }
   },
-  "lastUpdated": "2026-06-12T01:24:59.614Z"
+  "lastUpdated": "2026-06-12T01:37:56.691Z"
 }

@@ -32,10 +32,15 @@ function cleanupText(str) {
   return String(str || '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&#x2F;|&#47;/g, '/')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&#x(\w+);/g, (m, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+    })
     .replace(/\s+/g, ' ')
     .trim();
 }

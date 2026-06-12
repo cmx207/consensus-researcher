@@ -437,6 +437,8 @@ function parseArgs(argv) {
         opts.minScore = parseInt(argv[++i], 10);
       } else if (arg === '--platform' && argv[i + 1]) {
         opts.platform = argv[++i];
+      } else if (arg === '--json') {
+        opts.json = true;
       } else if (arg === '--no-cache') {
         opts.noCache = true;
       } else if (arg === '--save') {
@@ -1112,6 +1114,17 @@ async function collectRawData(query, opts, fetchLog = null) {
   raw.apiCost = getApiCost();
 
   if (fetchLog) {
+    // Web-search-backed platforms all empty → the search provider itself is
+    // likely down (e.g. DDG bot challenge). Surface that as a failure, not
+    // as "no results".
+    if (raw.sourceCount.reddit === 0 && raw.sourceCount.web === 0 && raw.sourceCount.amazon === 0) {
+      fetchLog.record({
+        platform: 'search',
+        stage: 'provider',
+        ok: false,
+        error: `all search-backed platforms returned 0 results — provider health: ${getSearchHealth()}`
+      });
+    }
     for (const [platform, count] of Object.entries(raw.sourceCount)) {
       fetchLog.record({ platform, stage: 'summary', ok: true, count });
     }
@@ -2754,16 +2767,17 @@ function watchlistList() {
   }
 }
 
-async function watchlistCheck(deep = false, budget = 3) {
+async function watchlistCheck(deep = false, budget = 3, asJson = false) {
   const watchlist = watchlistLoad();
   if (watchlist.items.length === 0) {
-    console.log('Watchlist is empty.');
+    console.log(asJson ? JSON.stringify({ items: [], checked: 0 }) : 'Watchlist is empty.');
     return;
   }
 
+  const jsonResults = [];
   const itemsToCheck = deep ? watchlist.items.slice(0, budget) : watchlist.items;
   const mode = deep ? 'Deep' : 'Quick';
-  console.log(`Watchlist ${mode} Check (${itemsToCheck.length}${deep ? `/${watchlist.items.length}` : ''} items)\n`);
+  if (!asJson) console.log(`Watchlist ${mode} Check (${itemsToCheck.length}${deep ? `/${watchlist.items.length}` : ''} items)\n`);
 
   for (let index = 0; index < itemsToCheck.length; index++) {
     const item = itemsToCheck[index];
@@ -2865,19 +2879,43 @@ async function watchlistCheck(deep = false, budget = 3) {
         watchlist.items[itemIndex].lastBrandScore = newBrandScore;
       }
 
-      console.log(`${icon} ${item.query} - ${status} (${newScore}, ${newSourceCount.reddit} Reddit threads)`);
-      if (recommendation) console.log(`     RECOMMENDATION: ${recommendation}`);
+      if (asJson) {
+        jsonResults.push({
+          query: item.query,
+          icon,
+          status,
+          recommendation,
+          dataSufficiency: newScore,
+          redditThreads: newSourceCount.reddit,
+          flagged: icon !== '[ok]' && icon !== '[new]'
+        });
+      } else {
+        console.log(`${icon} ${item.query} - ${status} (${newScore}, ${newSourceCount.reddit} Reddit threads)`);
+        if (recommendation) console.log(`     RECOMMENDATION: ${recommendation}`);
+      }
 
       watchlist.items[itemIndex].lastChecked = new Date().toISOString();
       watchlist.items[itemIndex].lastScore = newScore;
       watchlist.items[itemIndex].lastSourceCount = newSourceCount;
       if (deep) watchlist.items[itemIndex].lastDeepCheck = new Date().toISOString();
     } catch (err) {
-      console.log(`[err] ${item.query} - error: ${err.message}`);
+      if (asJson) {
+        jsonResults.push({ query: item.query, icon: '[err]', status: `error: ${err.message}`, recommendation: null, flagged: true });
+      } else {
+        console.log(`[err] ${item.query} - error: ${err.message}`);
+      }
     }
   }
 
   watchlistSave(watchlist);
+  if (asJson) {
+    console.log(JSON.stringify({
+      mode: mode.toLowerCase(),
+      checked: itemsToCheck.length,
+      flagged: jsonResults.filter(result => result.flagged).length,
+      items: jsonResults
+    }, null, 2));
+  }
   logApiCost();
 }
 
@@ -3360,7 +3398,7 @@ async function main() {
       return;
     }
     if (args.subAction === 'check') {
-      await watchlistCheck(args.deep, args.budget || 3);
+      await watchlistCheck(args.deep, args.budget || 3, args.json === true);
       return;
     }
     console.error('Usage: research.js watchlist [add|remove|check]');
